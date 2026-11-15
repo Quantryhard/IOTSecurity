@@ -1,0 +1,4 @@
+door_hw.c:6:6:DoorHW_Init	16	static
+door_hw.c:13:6:Servo_SetAngle	24	static
+door_hw.c:19:6:Buzzer_Beep	24	static
+door_hw.c:28:6:UI_UpdateScreen	24	static

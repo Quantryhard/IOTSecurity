@@ -5,6 +5,9 @@
 
 # Add inputs and outputs from these tool invocations to the build variables 
 C_SRCS += \
+../Core/Src/door_hw.c \
+../Core/Src/esp8266.c \
+../Core/Src/keypad.c \
 ../Core/Src/main.c \
 ../Core/Src/rc522.c \
 ../Core/Src/ssd1306.c \
@@ -15,6 +18,9 @@ C_SRCS += \
 ../Core/Src/system_stm32f1xx.c 
 
 OBJS += \
+./Core/Src/door_hw.o \
+./Core/Src/esp8266.o \
+./Core/Src/keypad.o \
 ./Core/Src/main.o \
 ./Core/Src/rc522.o \
 ./Core/Src/ssd1306.o \
@@ -25,6 +31,9 @@ OBJS += \
 ./Core/Src/system_stm32f1xx.o 
 
 C_DEPS += \
+./Core/Src/door_hw.d \
+./Core/Src/esp8266.d \
+./Core/Src/keypad.d \
 ./Core/Src/main.d \
 ./Core/Src/rc522.d \
 ./Core/Src/ssd1306.d \
