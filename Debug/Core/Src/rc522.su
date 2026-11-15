@@ -1,0 +1,7 @@
+rc522.c:10:13:RC522_WriteReg	24	static
+rc522.c:17:16:RC522_ReadReg	32	static
+rc522.c:26:13:RC522_SetBitMask	16	static
+rc522.c:30:13:RC522_ClearBitMask	16	static
+rc522.c:34:6:RC522_Init	16	static
+rc522.c:56:16:RC522_ToCard	48	static
+rc522.c:99:9:RC522_Check	32	static
