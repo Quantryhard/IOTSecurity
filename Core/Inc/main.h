@@ -66,6 +66,7 @@ void Error_Handler(void);
 #define RC522_RST_GPIO_Port GPIOB
 #define Pull_down_Pin GPIO_PIN_1
 #define Pull_down_GPIO_Port GPIOB
+
 /* USER CODE BEGIN Private defines */
 
 /* USER CODE END Private defines */
@@ -75,5 +76,3 @@ void Error_Handler(void);
 #endif
 
 #endif /* __MAIN_H */
-
-/************************ (C) COPYRIGHT STMicroelectronics *****END OF FILE****/

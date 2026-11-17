@@ -1,0 +1,8 @@
+../Core/Src/door_hw.c:6:6:DoorHW_Init	1
+../Core/Src/door_hw.c:16:6:Servo_SetAngle	3
+../Core/Src/door_hw.c:31:6:LED_SetGreen	1
+../Core/Src/door_hw.c:35:6:LED_SetRed	1
+../Core/Src/door_hw.c:39:6:LED_BlinkGreen	3
+../Core/Src/door_hw.c:48:6:LED_BlinkRed	3
+../Core/Src/door_hw.c:57:6:Buzzer_Beep	3
+../Core/Src/door_hw.c:66:6:UI_UpdateScreen	2

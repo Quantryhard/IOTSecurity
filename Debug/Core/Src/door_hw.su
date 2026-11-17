@@ -1,4 +1,8 @@
-door_hw.c:6:6:DoorHW_Init	16	static
-door_hw.c:13:6:Servo_SetAngle	24	static
-door_hw.c:19:6:Buzzer_Beep	24	static
-door_hw.c:28:6:UI_UpdateScreen	24	static
+../Core/Src/door_hw.c:6:6:DoorHW_Init	16	static
+../Core/Src/door_hw.c:16:6:Servo_SetAngle	16	static
+../Core/Src/door_hw.c:31:6:LED_SetGreen	16	static
+../Core/Src/door_hw.c:35:6:LED_SetRed	16	static
+../Core/Src/door_hw.c:39:6:LED_BlinkGreen	24	static
+../Core/Src/door_hw.c:48:6:LED_BlinkRed	24	static
+../Core/Src/door_hw.c:57:6:Buzzer_Beep	24	static
+../Core/Src/door_hw.c:66:6:UI_UpdateScreen	24	static

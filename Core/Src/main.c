@@ -2,48 +2,24 @@
 /**
   ******************************************************************************
   * @file           : main.c
-  * @brief          : Main program body - SmartLock IoT (STM32F103C8T6)
+  * @brief          : Main program body - Smart Door Lock Complete
   ******************************************************************************
   */
 /* USER CODE END Header */
-
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "rc522.h"
-#include "keypad.h"
-#include "esp8266.h"
-#include "door_hw.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include "door_hw.h"
+#include "esp8266.h"
+#include "keypad.h"
+#include "rc522.h"
+#include "ssd1306.h"
 /* USER CODE END Includes */
-
-/* Private typedef -----------------------------------------------------------*/
-/* USER CODE BEGIN PTD */
-typedef enum {
-    STATE_NORMAL = 0,
-    STATE_UNLOCKED,
-    STATE_LOCKED_OUT,
-    STATE_CHANGE_PASS_OLD,
-    STATE_CHANGE_PASS_NEW,
-    STATE_RFID_ADMIN_WAIT_MASTER,
-    STATE_RFID_ADMIN_SCAN_CARD
-} SystemState_t;
-/* USER CODE END PTD */
-
-/* Private define ------------------------------------------------------------*/
-/* USER CODE BEGIN PD */
-#define MAX_CARDS 5
-#define PASS_LEN  4
-/* USER CODE END PD */
-
-/* Private macro -------------------------------------------------------------*/
-/* USER CODE BEGIN PM */
-
-/* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c1;
@@ -52,26 +28,46 @@ TIM_HandleTypeDef htim2;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-char current_pin[PASS_LEN + 1] = "1234";
-char input_pin[PASS_LEN + 1]   = "";
-uint8_t pin_idx = 0;
+#define PASS_LEN 4
+#define MAX_CARDS 5
 
-uint8_t master_uid[4] = {0x12, 0x34, 0x56, 0x78};
-uint8_t valid_cards[MAX_CARDS][4] = {
-    {0x12, 0x34, 0x56, 0x78},
-    {0xAA, 0xBB, 0xCC, 0xDD},
-    {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}
-};
+typedef enum {
+    STATE_NORMAL = 0,
+    STATE_VERIFY_FOR_PASS,
+    STATE_NEW_PASS,
+    STATE_VERIFY_FOR_CARD,
+    STATE_MANAGE_CARD,
+    STATE_VERIFY_MODE_PIN,      // Nhập mã chủ nhà 4 số để bật/tắt Chế độ Vắng nhà
+    STATE_VERIFY_OLD_MODE_PIN,  // Nhập mã chủ nhà cũ để đổi mã chủ nhà
+    STATE_NEW_MODE_PIN          // Nhập mã chủ nhà mới
+} SystemState_t;
 
 SystemState_t sys_state = STATE_NORMAL;
-bool away_mode = false;
-bool alarm_active = false;
-uint8_t wrong_attempts = 0;
+char current_pass[PASS_LEN + 1] = "1234";      // Mật khẩu mở cửa thường
+char master_mode_pin[PASS_LEN + 1] = "9999";   // Mã chủ nhà đổi chế độ Vắng nhà
 
-uint32_t unlock_timer = 0;
-uint32_t lockout_timer = 0;
-uint32_t alarm_blink_timer = 0;
-uint32_t rfid_poll_timer = 0;
+uint8_t valid_cards[MAX_CARDS][4] = {
+    {0x12, 0x34, 0x56, 0x78},
+    {0, 0, 0, 0},
+    {0, 0, 0, 0},
+    {0, 0, 0, 0},
+    {0, 0, 0, 0}
+};
+uint8_t card_count = 1;
+
+char input_pass[PASS_LEN + 1] = {0};
+uint8_t pass_idx = 0;
+uint8_t wrong_count = 0;
+
+bool away_mode = false;          // false: Ở nhà | true: Vắng nhà (khóa cứng)
+bool is_door_open = false;
+bool is_awake = false;
+bool door_timeout_alert = false;
+
+uint32_t last_interact_time = 0; // Mốc thời gian cho màn hình nghỉ 5s
+uint32_t door_opened_time = 0;   // Mốc thời gian riêng cho cảnh báo quên đóng cửa 15s
+uint32_t last_alarm_beep = 0;
+uint8_t rx_uid[5];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -82,125 +78,139 @@ static void MX_SPI1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_USART2_UART_Init(void);
 
-/* USER CODE BEGIN PFP */
-void Door_Unlock(const char *method_msg, uint8_t log_code);
-void Door_Lock(void);
-void Handle_AuthFailure(const char *reason);
-bool RFID_IsAuthorized(uint8_t *uid);
-void RFID_ToggleCard(uint8_t *uid);
-/* USER CODE END PFP */
-
-/* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-void Door_Unlock(const char *method_msg, uint8_t log_code) {
-    Servo_SetAngle(90);
-    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET); // Bật LED xanh (PC13 mức thấp)
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_RESET);  // Tắt LED đỏ (PB8)
-
-    away_mode = false;
-    alarm_active = false;
-    wrong_attempts = 0;
-    pin_idx = 0;
-    memset(input_pin, 0, sizeof(input_pin));
-
-    Buzzer_Beep(1, 120);
-    UI_UpdateScreen(away_mode, "MO CUA THANH CONG", method_msg, "Tu dong khoa sau 5s");
-    ESP8266_SendLog(log_code, 0);
-
-    sys_state = STATE_UNLOCKED;
-    unlock_timer = HAL_GetTick();
+// Gọi khi có thao tác chủ động (bấm phím, quẹt thẻ, lệnh WiFi) -> Reset cả 5s nghỉ và 15s báo động cửa
+void Update_Interaction(void) {
+    uint32_t now = HAL_GetTick();
+    last_interact_time = now;
+    door_opened_time = now;
+    door_timeout_alert = false;
 }
 
-void Door_Lock(void) {
-    Servo_SetAngle(0);
-    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);   // Tắt LED xanh (PC13 mức cao)
-    sys_state = STATE_NORMAL;
-    UI_UpdateScreen(away_mode, "CUA DA KHOA", "Quet the hoac nhap PIN", "A:Vang nha | B:Doi MK");
-}
-
-void Handle_AuthFailure(const char *reason) {
-    wrong_attempts++;
-    pin_idx = 0;
-    memset(input_pin, 0, sizeof(input_pin));
-    Buzzer_Beep(3, 80);
-
-    if (wrong_attempts >= 3) {
-        sys_state = STATE_LOCKED_OUT;
-        lockout_timer = HAL_GetTick();
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_SET); // Bật sáng LED đỏ (PB8)
-        UI_UpdateScreen(away_mode, "CANH BAO BAO MAT!", "Sai qua 3 lan!", "Khoa ban phim 60s");
-        ESP8266_SendLog(0, 2);
+void Show_Cute_Idle(void) {
+    SSD1306_Clear();
+    SSD1306_SetCursor(24, 1);
+    SSD1306_WriteString("<3  SMART DOOR  <3");
+    SSD1306_SetCursor(30, 4);
+    SSD1306_WriteString("( ^  v  ^ )");
+    SSD1306_SetCursor(28, 6);
+    if (away_mode) {
+        SSD1306_WriteString("[CHE DO VANG NHA]");
     } else {
-        char attempt_str[24];
-        snprintf(attempt_str, sizeof(attempt_str), "Con %d lan thu!", 3 - wrong_attempts);
-        UI_UpdateScreen(away_mode, reason, attempt_str, "Vui long thu lai");
+        SSD1306_WriteString("Xin chao ban!");
+    }
+    SSD1306_UpdateScreen();
+}
+
+void Show_Current_Prompt(void) {
+    char display_buf[16] = {0};
+    for (uint8_t i = 0; i < PASS_LEN; i++) {
+        if (sys_state == STATE_VERIFY_MODE_PIN || sys_state == STATE_VERIFY_OLD_MODE_PIN || sys_state == STATE_NEW_MODE_PIN) {
+            display_buf[i * 2] = (i < pass_idx) ? '*' : '_';
+        } else {
+            display_buf[i * 2] = (i < pass_idx) ? input_pass[i] : '_';
+        }
+        display_buf[i * 2 + 1] = ' ';
+    }
+
+    if (sys_state == STATE_NORMAL) {
+        UI_UpdateScreen(away_mode, "Nhap MK (4 so):", display_buf, "A:Mode B:MK *:MaChu");
+    } else if (sys_state == STATE_VERIFY_FOR_PASS) {
+        UI_UpdateScreen(away_mode, "DOI MK - Nhap MK cu:", display_buf, "#:Xac nhan  *:Huy");
+    } else if (sys_state == STATE_NEW_PASS) {
+        UI_UpdateScreen(away_mode, "DOI MK - Nhap MK moi:", display_buf, "#:Luu MK    *:Huy");
+    } else if (sys_state == STATE_VERIFY_FOR_CARD) {
+        UI_UpdateScreen(away_mode, "THE TU - Nhap MK:", display_buf, "#:Xac nhan  *:Huy");
+    } else if (sys_state == STATE_MANAGE_CARD) {
+        char info[22];
+        snprintf(info, sizeof(info), "Da luu: %d/%d the", card_count, MAX_CARDS);
+        UI_UpdateScreen(away_mode, "Quet the de THEM/XOA", info, "Bam [*] de thoat");
+    } else if (sys_state == STATE_VERIFY_MODE_PIN) {
+        UI_UpdateScreen(away_mode, "NHAP MA CHU NHA:", display_buf, "#:Doi Mode  *:Huy");
+    } else if (sys_state == STATE_VERIFY_OLD_MODE_PIN) {
+        UI_UpdateScreen(away_mode, "MA CHU NHA CU:", display_buf, "#:Tiep tuc  *:Huy");
+    } else if (sys_state == STATE_NEW_MODE_PIN) {
+        UI_UpdateScreen(away_mode, "MA CHU NHA MOI:", display_buf, "#:Luu ma    *:Huy");
     }
 }
 
-bool RFID_IsAuthorized(uint8_t *uid) {
-    for (uint8_t i = 0; i < MAX_CARDS; i++) {
-        if (memcmp(uid, valid_cards[i], 4) == 0) return true;
-    }
-    return false;
+void Reset_Input(void) {
+    pass_idx = 0;
+    memset(input_pass, 0, sizeof(input_pass));
 }
 
-void RFID_ToggleCard(uint8_t *uid) {
-    if (memcmp(uid, master_uid, 4) == 0) {
-        UI_UpdateScreen(away_mode, "LOI THAO TAC", "Khong the xoa the", "Master!");
-        Buzzer_Beep(2, 100);
+int8_t Find_Card(uint8_t *uid) {
+    for (uint8_t i = 0; i < card_count; i++) {
+        if (memcmp(valid_cards[i], uid, 4) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void Unlock_Door(const char *reason) {
+    Update_Interaction();
+    is_awake = true;
+
+    // CHỐT CHẶN TUYỆT ĐỐI KHI Ở CHẾ ĐỘ VẮNG NHÀ
+    if (away_mode) {
+        LED_BlinkRed(2, 150);
+        Buzzer_Beep(3, 150);
+        UI_UpdateScreen(away_mode, "CHE DO VANG NHA!", "Cua da khoa cung!", "Tat Mode de mo cua");
+        ESP8266_SendLog(0, 1);
+        HAL_Delay(1500);
+        Show_Current_Prompt();
         return;
     }
-    for (uint8_t i = 1; i < MAX_CARDS; i++) {
-        if (memcmp(uid, valid_cards[i], 4) == 0) {
-            memset(valid_cards[i], 0, 4);
-            Buzzer_Beep(2, 100);
-            UI_UpdateScreen(away_mode, "QUAN LY THE RFID", "Da XOA the khoi", "bo nho he thong!");
-            HAL_Delay(1500);
-            Door_Lock();
-            return;
-        }
+
+    wrong_count = 0;
+    if (!is_door_open) {
+        UI_UpdateScreen(away_mode, "MO CUA THANH CONG", reason, "Bam [D] de dong cua");
+        LED_BlinkGreen(1, 150);
+        Buzzer_Beep(1, 120);
+        HAL_Delay(100);
+
+        LED_SetRed(false);
+        LED_SetGreen(true);
+
+        Servo_SetAngle(90);
+        is_door_open = true;
+        door_timeout_alert = false;
+        door_opened_time = HAL_GetTick();
+        ESP8266_SendLog(1, 0);
+    } else {
+        UI_UpdateScreen(away_mode, "CUA DANG MO SAN", "Bam [D] de dong cua", "");
     }
-    for (uint8_t i = 1; i < MAX_CARDS; i++) {
-        uint8_t empty[4] = {0, 0, 0, 0};
-        if (memcmp(valid_cards[i], empty, 4) == 0) {
-            memcpy(valid_cards[i], uid, 4);
-            Buzzer_Beep(1, 200);
-            UI_UpdateScreen(away_mode, "QUAN LY THE RFID", "Da THEM the moi", "thanh cong!");
-            HAL_Delay(1500);
-            Door_Lock();
-            return;
-        }
+}
+
+void Lock_Door(void) {
+    Update_Interaction();
+    if (is_door_open) {
+        UI_UpdateScreen(away_mode, "DANG DONG CUA...", "Xin cho mot chut", "");
+        LED_SetGreen(false);
+        LED_SetRed(false);
+        door_timeout_alert = false;
+
+        Buzzer_Beep(2, 80);
+        Servo_SetAngle(0);
+        is_door_open = false;
+        sys_state = STATE_NORMAL;
+        Reset_Input();
+        Show_Current_Prompt();
+    } else {
+        UI_UpdateScreen(away_mode, "CUA DA DONG SAN!", "", "");
+        HAL_Delay(1000);
+        if (is_awake) Show_Current_Prompt();
+        else Show_Cute_Idle();
     }
-    UI_UpdateScreen(away_mode, "BO NHO DAY", "Toi da 5 the RFID", "");
-    HAL_Delay(1500);
-    Door_Lock();
 }
 /* USER CODE END 0 */
 
-/**
-  * @brief  The application entry point.
-  * @retval int
-  */
 int main(void)
 {
-  /* USER CODE BEGIN 1 */
-
-  /* USER CODE END 1 */
-
-  /* MCU Configuration--------------------------------------------------------*/
   HAL_Init();
-
-  /* USER CODE BEGIN Init */
-
-  /* USER CODE END Init */
-
   SystemClock_Config();
 
-  /* USER CODE BEGIN SysInit */
-
-  /* USER CODE END SysInit */
-
-  /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_I2C1_Init();
   MX_SPI1_Init();
@@ -208,165 +218,344 @@ int main(void)
   MX_USART2_UART_Init();
 
   /* USER CODE BEGIN 2 */
-  DoorHW_Init(&htim2, &hi2c1);
-  RC522_Init(&hspi1);
+    DoorHW_Init(&htim2, &hi2c1);
+    RC522_Init(&hspi1);
+    UI_UpdateScreen(away_mode, "Khoi dong WiFi...", WIFI_SSID, "Xin cho 2 giay...");
+    HAL_Delay(2000); // Chờ ESP32 khởi động xong hoàn toàn trước khi gửi AT
 
-  UI_UpdateScreen(away_mode, "Dang ket noi WiFi...", WIFI_SSID, "Vui long cho...");
-  ESP8266_Init(&huart2);
+    char esp_ip[20] = {0};
+    char debug_msg[25] = {0};
 
-  Door_Lock();
+    if (ESP8266_Init(&huart2, esp_ip, debug_msg)) {
+        char ip_line[26];
+        snprintf(ip_line, sizeof(ip_line), "IP: %s", esp_ip);
+        UI_UpdateScreen(away_mode, "WiFi: THANH CONG!", WIFI_SSID, ip_line);
+        LED_BlinkGreen(2, 150);
+        Buzzer_Beep(2, 100);
+        HAL_Delay(3000);
+    } else {
+        UI_UpdateScreen(away_mode, "WiFi: THAT BAI!", debug_msg, "Xem lai phan cung");
+        LED_BlinkRed(2, 200);
+        Buzzer_Beep(3, 150);
+        HAL_Delay(3000);
+    }
+
+    is_awake = false;
+    Update_Interaction();
+    Show_Cute_Idle();
   /* USER CODE END 2 */
 
-  /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    /* USER CODE END WHILE */
-
-    /* USER CODE BEGIN 3 */
     uint32_t now = HAL_GetTick();
 
-    // 1. Kiểm tra lệnh mở cửa từ xa qua UART2 (ESP)
-    if (ESP8266_CheckRemoteUnlock()) {
-        Door_Unlock("Mo khoa tu xa IoT", 3);
-    }
+    // 1. Cảm biến phát hiện người (PB1) -> Nháy đèn đỏ 1 cái và giữ mốc 10s
+        static uint8_t ir_prev_state = 0;
+        uint8_t ir_triggered = (HAL_GPIO_ReadPin(Pull_down_GPIO_Port, Pull_down_Pin) == GPIO_PIN_RESET) ? 1 : 0;
 
-    // 2. Xử lý đếm ngược tự động khóa cửa sau 5 giây
-    if (sys_state == STATE_UNLOCKED) {
-        if (now - unlock_timer >= 5000) Door_Lock();
-        continue;
-    }
+        if (ir_triggered) {
+            last_interact_time = now; // Gia hạn thêm 10 giây kể từ lúc cảm biến còn quét thấy người
 
-    // 3. Xử lý khóa bàn phím 60 giây khi nhập sai quá 3 lần
-    if (sys_state == STATE_LOCKED_OUT) {
-        if (now - lockout_timer >= 60000) {
-            wrong_attempts = 0;
-            HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_RESET);
-            Door_Lock();
-        }
-        continue;
-    }
-
-    // 4. Giám sát cảm biến chuyển động PIR (PB1) khi bật chế độ Vắng nhà
-    if (away_mode && HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_1) == GPIO_PIN_SET && !alarm_active) {
-        alarm_active = true;
-        UI_UpdateScreen(away_mode, "BAO DONG DOT NHAP!", "Phat hien chuyen dong", "Dang gui canh bao...");
-        ESP8266_SendLog(0, 1);
-    }
-
-    // 5. Nháy LED đỏ (PB8) và còi Buzzer (PB9) khi có báo động
-    if (alarm_active && (now - alarm_blink_timer >= 200)) {
-        alarm_blink_timer = now;
-        HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_8);
-        HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_9);
-    }
-
-    // 6. Quét thẻ từ RFID (SPI1) định kỳ mỗi 200ms
-    if (now - rfid_poll_timer >= 200) {
-        rfid_poll_timer = now;
-        uint8_t card_uid[5] = {0};
-        if (RC522_Check(card_uid) == RC522_OK) {
-            if (sys_state == STATE_RFID_ADMIN_WAIT_MASTER) {
-                if (memcmp(card_uid, master_uid, 4) == 0) {
-                    Buzzer_Beep(1, 100);
-                    sys_state = STATE_RFID_ADMIN_SCAN_CARD;
-                    UI_UpdateScreen(away_mode, "XAC THUC MASTER OK", "Quet the can THEM", "hoac XOA...");
-                } else {
-                    UI_UpdateScreen(away_mode, "SAI THE MASTER!", "Huy thao tac quan ly", "");
-                    Buzzer_Beep(3, 80);
-                    HAL_Delay(1200);
-                    Door_Lock();
-                }
-            } else if (sys_state == STATE_RFID_ADMIN_SCAN_CARD) {
-                RFID_ToggleCard(card_uid);
-            } else if (sys_state == STATE_NORMAL) {
-                if (RFID_IsAuthorized(card_uid)) Door_Unlock("Phuong thuc: The RFID", 1);
-                else Handle_AuthFailure("THE KHONG HOP LE!");
+            // Chỉ nháy đèn đỏ 1 cái tại khoảnh khắc vừa phát hiện người (tránh nháy liên tục)
+            if (ir_prev_state == 0) {
+                LED_BlinkRed(1, 100);
             }
-            HAL_Delay(500);
+
+            if (!is_awake) {
+                is_awake = true;
+                sys_state = STATE_NORMAL;
+                Reset_Input();
+                Show_Current_Prompt();
+            }
+        }
+        ir_prev_state = ir_triggered;
+        // 2. Sau 10 giây không phát hiện người và không có tương tác nào -> Về màn hình mặt cười
+            if (is_awake && !is_door_open && (now - last_interact_time >= 10000)) {
+                is_awake = false;
+                sys_state = STATE_NORMAL;
+                Reset_Input();
+                LED_BlinkGreen(1, 100);
+                Show_Cute_Idle();
+            }
+
+    // 3. Cảnh báo khi mở cửa mà không có thao tác tương tác nào quá 15 giây
+    if (is_door_open) {
+        if (!door_timeout_alert && (now - door_opened_time >= 15000)) {
+            door_timeout_alert = true;
+            LED_SetGreen(false);
+            LED_SetRed(true);
+            UI_UpdateScreen(away_mode, "CANH BAO QUEN CUA!", "Mo qua 15 giay!", "Bam [D] de dong cua");
+            ESP8266_SendLog(1, 1);
+        }
+        if (door_timeout_alert && (now - last_alarm_beep >= 600)) {
+            last_alarm_beep = now;
+            Buzzer_Beep(1, 150);
         }
     }
 
-    // 7. Quét bàn phím ma trận 4x4 (PB12-15, PA8-11)
-    char key = Keypad_GetKey();
-    if (key != 0) {
-        Buzzer_Beep(1, 30);
-
-        if (key == '*') {
-            pin_idx = 0;
-            memset(input_pin, 0, sizeof(input_pin));
-            Door_Lock();
-        } else if (key == 'A' && sys_state == STATE_NORMAL) {
+    // 4. Xử lý các lệnh điều khiển từ xa qua WiFi
+    char remote_pass[8] = {0};
+    RemoteCmd_t rcmd = ESP8266_GetRemoteCmd(remote_pass);
+    if (rcmd != REMOTE_CMD_NONE) {
+        Update_Interaction();
+        if (rcmd == REMOTE_CMD_OPEN) {
+            Unlock_Door("Mo tu xa (WiFi)");
+        } else if (rcmd == REMOTE_CMD_LOCK) {
+            Lock_Door();
+        } else if (rcmd == REMOTE_CMD_TOGGLE_MODE) {
             away_mode = !away_mode;
-            if (!away_mode) {
-                alarm_active = false;
-                HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_RESET); // Tắt LED đỏ
-                HAL_GPIO_WritePin(GPIOB, GPIO_PIN_9, GPIO_PIN_RESET); // Tắt Buzzer
+            if (away_mode && is_door_open) {
+                Lock_Door();
             }
-            UI_UpdateScreen(away_mode, away_mode ? "DA BAT VANG NHA" : "DA TAT VANG NHA",
-                            "Cam bien PIR:", away_mode ? "DANG GIAM SAT" : "NGUNG HOAT DONG");
-        } else if (key == 'B' && sys_state == STATE_NORMAL) {
-            sys_state = STATE_CHANGE_PASS_OLD;
-            pin_idx = 0;
-            memset(input_pin, 0, sizeof(input_pin));
-            UI_UpdateScreen(away_mode, "DOI MAT KHAU", "Nhap MK cu (4 so):", "Bam # de xac nhan");
-        } else if (key == 'C' && sys_state == STATE_NORMAL) {
-            sys_state = STATE_RFID_ADMIN_WAIT_MASTER;
-            UI_UpdateScreen(away_mode, "QUAN LY THE RFID", "Vui long quet THE", "MASTER de tiep tuc");
-        } else if (key >= '0' && key <= '9' && pin_idx < PASS_LEN) {
-            input_pin[pin_idx++] = key;
-            input_pin[pin_idx] = '\0';
-            char mask_str[16] = "PIN: ";
-            for (uint8_t i = 0; i < pin_idx; i++) strcat(mask_str, "*");
-            UI_UpdateScreen(away_mode, "DANG NHAP MAT KHAU", mask_str, "Bam # OK | * Xoa");
-        } else if (key == '#') {
-            if (sys_state == STATE_NORMAL) {
-                if (strcmp(input_pin, current_pin) == 0) Door_Unlock("Phuong thuc: Mat khau", 2);
-                else Handle_AuthFailure("SAI MAT KHAU!");
-            } else if (sys_state == STATE_CHANGE_PASS_OLD) {
-                if (strcmp(input_pin, current_pin) == 0) {
-                    sys_state = STATE_CHANGE_PASS_NEW;
-                    pin_idx = 0;
-                    memset(input_pin, 0, sizeof(input_pin));
-                    UI_UpdateScreen(away_mode, "MK CU CHINH XAC", "Nhap MK moi (4 so):", "Bam # de luu");
-                } else {
-                    UI_UpdateScreen(away_mode, "SAI MAT KHAU CU!", "Huy doi mat khau", "");
-                    Buzzer_Beep(3, 80);
-                    HAL_Delay(1200);
-                    Door_Lock();
-                }
-            } else if (sys_state == STATE_CHANGE_PASS_NEW) {
-                if (pin_idx == PASS_LEN) {
-                    strcpy(current_pin, input_pin);
+            LED_BlinkGreen(1, 120);
+            Buzzer_Beep(1, 150);
+            if (is_awake) Show_Current_Prompt();
+            else Show_Cute_Idle();
+        } else if (rcmd == REMOTE_CMD_CHANGE_PASS) {
+            memcpy(current_pass, remote_pass, PASS_LEN);
+            current_pass[PASS_LEN] = '\0';
+            LED_BlinkGreen(2, 120);
+            Buzzer_Beep(2, 80);
+            UI_UpdateScreen(away_mode, "DOI MK TU XA!", "Da cap nhat MK moi", "");
+            HAL_Delay(1500);
+            if (is_awake) Show_Current_Prompt();
+            else Show_Cute_Idle();
+        } else if (rcmd == REMOTE_CMD_CHANGE_MPIN) {
+            memcpy(master_mode_pin, remote_pass, PASS_LEN);
+            master_mode_pin[PASS_LEN] = '\0';
+            LED_BlinkGreen(2, 120);
+            Buzzer_Beep(2, 80);
+            UI_UpdateScreen(away_mode, "DOI MA CHU NHA!", "Da cap nhat tu xa", "");
+            HAL_Delay(1500);
+            if (is_awake) Show_Current_Prompt();
+            else Show_Cute_Idle();
+        }
+    }
+
+    // 5. Xử lý Quẹt thẻ & Bàn phím khi màn hình đang thức
+    if (is_awake) {
+        if (RC522_Check(rx_uid) == RC522_OK) {
+            Update_Interaction();
+            uint8_t card_4b[4];
+            memcpy(card_4b, rx_uid, 4);
+            int8_t idx = Find_Card(card_4b);
+
+            if (sys_state == STATE_MANAGE_CARD) {
+                if (idx >= 0) {
+                    for (uint8_t i = idx; i < card_count - 1; i++) {
+                        memcpy(valid_cards[i], valid_cards[i + 1], 4);
+                    }
+                    card_count--;
+                    LED_BlinkRed(2, 120);
                     Buzzer_Beep(2, 100);
-                    UI_UpdateScreen(away_mode, "THANH CONG!", "Da cap nhat mat khau", "moi cho he thong");
-                    HAL_Delay(1500);
-                    Door_Lock();
+                    UI_UpdateScreen(away_mode, "DA XOA THE NAY!", "Khoi danh sach", "");
                 } else {
-                    UI_UpdateScreen(away_mode, "LOI DO DAI", "Mat khau phai du", "4 chu so!");
+                    if (card_count < MAX_CARDS) {
+                        memcpy(valid_cards[card_count], card_4b, 4);
+                        card_count++;
+                        LED_BlinkGreen(2, 120);
+                        Buzzer_Beep(1, 200);
+                        UI_UpdateScreen(away_mode, "THEM THE THANH CONG!", "Da luu the moi", "");
+                    } else {
+                        LED_BlinkRed(2, 150);
+                        UI_UpdateScreen(away_mode, "BO NHO DAY!", "Toi da 5 the", "");
+                    }
+                }
+                HAL_Delay(1500);
+                Show_Current_Prompt();
+            } else {
+                if (idx >= 0) {
+                    Unlock_Door("The RFID hop le");
+                } else {
+                    char uid_str[22];
+                    snprintf(uid_str, sizeof(uid_str), "UID:%02X %02X %02X %02X",
+                             card_4b[0], card_4b[1], card_4b[2], card_4b[3]);
+                    LED_BlinkRed(1, 200);
+                    Buzzer_Beep(2, 100);
+                    UI_UpdateScreen(away_mode, "THE KHONG HOP LE!", uid_str, "Thu lai...");
+                    ESP8266_SendLog(0, 1);
+                    HAL_Delay(1500);
+                    Show_Current_Prompt();
+                }
+            }
+        }
+
+        char key = Keypad_GetKey();
+        if (key != 0) {
+            Buzzer_Beep(1, 35);
+            Update_Interaction();
+
+            if (key == 'D') {
+                Lock_Door();
+            }
+            else if (key == 'A' && sys_state == STATE_NORMAL) {
+                sys_state = STATE_VERIFY_MODE_PIN;
+                Reset_Input();
+                Show_Current_Prompt();
+            }
+            else if (key == 'B' && sys_state == STATE_NORMAL) {
+                sys_state = STATE_VERIFY_FOR_PASS;
+                Reset_Input();
+                Show_Current_Prompt();
+            }
+            else if (key == 'C' && sys_state == STATE_NORMAL) {
+                sys_state = STATE_VERIFY_FOR_CARD;
+                Reset_Input();
+                Show_Current_Prompt();
+            }
+            else if (key == '*') {
+                if (pass_idx > 0) {
+                    Reset_Input();
+                } else if (sys_state == STATE_NORMAL) {
+                    sys_state = STATE_VERIFY_OLD_MODE_PIN;
+                } else {
+                    sys_state = STATE_NORMAL;
+                }
+                Show_Current_Prompt();
+            }
+            else if (key == '#') {
+                if (pass_idx == 0 && sys_state == STATE_NORMAL) {
+                    sys_state = STATE_VERIFY_MODE_PIN;
+                    Show_Current_Prompt();
+                }
+                else if (pass_idx == PASS_LEN) {
+                    input_pass[PASS_LEN] = '\0';
+
+                    if (sys_state == STATE_NORMAL) {
+                        if (strcmp(input_pass, current_pass) == 0) {
+                            Unlock_Door("Mat khau dung");
+                        } else {
+                            wrong_count++;
+                            LED_BlinkRed(1, 250);
+                            Buzzer_Beep(2, 120);
+                            if (wrong_count >= 3) {
+                                LED_SetRed(true);
+                                UI_UpdateScreen(away_mode, "CANH BAO!", "Sai qua 3 lan!", "Khoa 10 giay...");
+                                ESP8266_SendLog(0, 1);
+                                Buzzer_Beep(5, 300);
+                                HAL_Delay(10000);
+                                LED_SetRed(false);
+                                wrong_count = 0;
+                                Update_Interaction();
+                            } else {
+                                UI_UpdateScreen(away_mode, "SAI MAT KHAU!", "Vui long thu lai", "");
+                                HAL_Delay(1200);
+                            }
+                            Show_Current_Prompt();
+                        }
+                    }
+                    else if (sys_state == STATE_VERIFY_MODE_PIN) {
+                        if (strcmp(input_pass, master_mode_pin) == 0) {
+                            away_mode = !away_mode;
+                            if (away_mode && is_door_open) {
+                                Lock_Door();
+                            }
+                            LED_BlinkGreen(2, 120);
+                            Buzzer_Beep(2, 100);
+                            UI_UpdateScreen(away_mode,
+                                            away_mode ? "DA BAT: VANG NHA" : "DA TAT: VANG NHA",
+                                            away_mode ? "Khoa cung toan bo!" : "Mo cua binh thuong",
+                                            "");
+                        } else {
+                            LED_BlinkRed(2, 200);
+                            Buzzer_Beep(3, 150);
+                            UI_UpdateScreen(away_mode, "SAI MA CHU NHA!", "Tu choi doi che do", "");
+                        }
+                        HAL_Delay(1500);
+                        sys_state = STATE_NORMAL;
+                        Reset_Input();
+                        Show_Current_Prompt();
+                    }
+                    else if (sys_state == STATE_VERIFY_OLD_MODE_PIN) {
+                        if (strcmp(input_pass, master_mode_pin) == 0) {
+                            LED_BlinkGreen(1, 150);
+                            sys_state = STATE_NEW_MODE_PIN;
+                        } else {
+                            LED_BlinkRed(2, 200);
+                            Buzzer_Beep(2, 120);
+                            UI_UpdateScreen(away_mode, "SAI MA CHU NHA CU!", "Huy thao tac", "");
+                            HAL_Delay(1200);
+                            sys_state = STATE_NORMAL;
+                        }
+                        Reset_Input();
+                        Show_Current_Prompt();
+                    }
+                    else if (sys_state == STATE_NEW_MODE_PIN) {
+                        strcpy(master_mode_pin, input_pass);
+                        LED_BlinkGreen(2, 120);
+                        Buzzer_Beep(2, 100);
+                        UI_UpdateScreen(away_mode, "DOI MA CHU NHA OK!", "Da luu ma moi", "");
+                        HAL_Delay(1500);
+                        sys_state = STATE_NORMAL;
+                        Reset_Input();
+                        Show_Current_Prompt();
+                    }
+                    else if (sys_state == STATE_VERIFY_FOR_PASS) {
+                        if (strcmp(input_pass, current_pass) == 0) {
+                            LED_BlinkGreen(1, 150);
+                            sys_state = STATE_NEW_PASS;
+                        } else {
+                            LED_BlinkRed(1, 250);
+                            Buzzer_Beep(2, 120);
+                            UI_UpdateScreen(away_mode, "SAI MK HIEN TAI!", "Huy doi mat khau", "");
+                            HAL_Delay(1200);
+                            sys_state = STATE_NORMAL;
+                        }
+                        Reset_Input();
+                        Show_Current_Prompt();
+                    }
+                    else if (sys_state == STATE_NEW_PASS) {
+                        strcpy(current_pass, input_pass);
+                        LED_BlinkGreen(2, 120);
+                        Buzzer_Beep(2, 100);
+                        UI_UpdateScreen(away_mode, "DOI MK THANH CONG!", "Da luu mat khau moi", "");
+                        HAL_Delay(1500);
+                        sys_state = STATE_NORMAL;
+                        Reset_Input();
+                        Show_Current_Prompt();
+                    }
+                    else if (sys_state == STATE_VERIFY_FOR_CARD) {
+                        if (strcmp(input_pass, current_pass) == 0) {
+                            LED_BlinkGreen(1, 150);
+                            sys_state = STATE_MANAGE_CARD;
+                        } else {
+                            LED_BlinkRed(1, 250);
+                            Buzzer_Beep(2, 120);
+                            UI_UpdateScreen(away_mode, "SAI MAT KHAU!", "Khong duoc truy cap", "");
+                            HAL_Delay(1200);
+                            sys_state = STATE_NORMAL;
+                        }
+                        Reset_Input();
+                        Show_Current_Prompt();
+                    }
+                    Reset_Input();
+                }
+            }
+            else if (key >= '0' && key <= '9' && sys_state != STATE_MANAGE_CARD) {
+                if (pass_idx < PASS_LEN) {
+                    input_pass[pass_idx++] = key;
+                    Show_Current_Prompt();
                 }
             }
         }
     }
   }
-  /* USER CODE END 3 */
+  /* USER CODE END WHILE */
 }
 
-/**
-  * @brief System Clock Configuration (HSI 64MHz)
-  * @retval None
-  */
 void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI_DIV2;
-  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL16;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -385,9 +574,6 @@ void SystemClock_Config(void)
   }
 }
 
-/**
-  * @brief I2C1 Initialization Function
-  */
 static void MX_I2C1_Init(void)
 {
   hi2c1.Instance = I2C1;
@@ -405,9 +591,6 @@ static void MX_I2C1_Init(void)
   }
 }
 
-/**
-  * @brief SPI1 Initialization Function
-  */
 static void MX_SPI1_Init(void)
 {
   hspi1.Instance = SPI1;
@@ -428,15 +611,13 @@ static void MX_SPI1_Init(void)
   }
 }
 
-/**
-  * @brief TIM2 Initialization Function (PWM 50Hz for SG90 Servo)
-  */
 static void MX_TIM2_Init(void)
 {
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
   TIM_OC_InitTypeDef sConfigOC = {0};
 
   htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 63;
+  htim2.Init.Prescaler = 71;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim2.Init.Period = 19999;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
@@ -445,27 +626,23 @@ static void MX_TIM2_Init(void)
   {
     Error_Handler();
   }
-
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
   sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 500;
+  sConfigOC.Pulse = 0;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
   if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
   {
     Error_Handler();
   }
-
-  __HAL_RCC_GPIOA_CLK_ENABLE();
-  GPIO_InitTypeDef GPIO_InitStruct = {0};
-  GPIO_InitStruct.Pin = GPIO_PIN_0;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  HAL_TIM_MspPostInit(&htim2);
 }
 
-/**
-  * @brief USART2 Initialization Function (115200 bps on PA2/PA3)
-  */
 static void MX_USART2_UART_Init(void)
 {
   huart2.Instance = USART2;
@@ -482,9 +659,6 @@ static void MX_USART2_UART_Init(void)
   }
 }
 
-/**
-  * @brief GPIO Initialization Function
-  */
 static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
@@ -494,50 +668,41 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0|GPIO_PIN_12|GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15, GPIO_PIN_SET);
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8|GPIO_PIN_9, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(RC522_CS_GPIO_Port, RC522_CS_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, RC522_RST_Pin|GPIO_PIN_12|GPIO_PIN_13|GPIO_PIN_14
+                          |GPIO_PIN_15|GPIO_PIN_8|GPIO_PIN_9, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : PA4 (RC522_CS) */
-  GPIO_InitStruct.Pin = GPIO_PIN_4;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PA8 PA9 PA10 PA11 (Keypad Col 1-4) */
-  GPIO_InitStruct.Pin = GPIO_PIN_8|GPIO_PIN_9|GPIO_PIN_10|GPIO_PIN_11;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_PULLUP;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PB0 (RC522_RST), PB8 (LED Red), PB9 (Buzzer), PB12-15 (Keypad Row 1-4) */
-  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_8|GPIO_PIN_9|GPIO_PIN_12
-                          |GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : PB1 (PIR Sensor) */
-  GPIO_InitStruct.Pin = GPIO_PIN_1;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : PC13 (LED Green - Active Low) */
   GPIO_InitStruct.Pin = GPIO_PIN_13;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = RC522_CS_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(RC522_CS_GPIO_Port, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = RC522_RST_Pin|GPIO_PIN_12|GPIO_PIN_13|GPIO_PIN_14
+                          |GPIO_PIN_15|GPIO_PIN_8|GPIO_PIN_9;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = Pull_down_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(Pull_down_GPIO_Port, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = GPIO_PIN_8|GPIO_PIN_9|GPIO_PIN_10|GPIO_PIN_11;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 }
 
-/**
-  * @brief  This function is executed in case of error occurrence.
-  */
 void Error_Handler(void)
 {
   __disable_irq();

@@ -1,0 +1,15 @@
+../Core/Src/main.c:83:6:Update_Interaction	1
+../Core/Src/main.c:90:6:Show_Cute_Idle	2
+../Core/Src/main.c:105:6:Show_Current_Prompt	15
+../Core/Src/main.c:137:6:Reset_Input	1
+../Core/Src/main.c:142:8:Find_Card	3
+../Core/Src/main.c:151:6:Unlock_Door	3
+../Core/Src/main.c:186:6:Lock_Door	3
+../Core/Src/main.c:209:5:main	67
+../Core/Src/main.c:547:6:SystemClock_Config	3
+../Core/Src/main.c:577:13:MX_I2C1_Init	2
+../Core/Src/main.c:594:13:MX_SPI1_Init	2
+../Core/Src/main.c:614:13:MX_TIM2_Init	4
+../Core/Src/main.c:646:13:MX_USART2_UART_Init	2
+../Core/Src/main.c:662:13:MX_GPIO_Init	1
+../Core/Src/main.c:706:6:Error_Handler	1
