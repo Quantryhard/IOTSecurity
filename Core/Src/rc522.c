@@ -105,7 +105,6 @@ uint8_t RC522_Check(uint8_t *id) {
     status = RC522_ToCard(0x0C, &req, 1, id, &backBits);
     if ((status != RC522_OK) || (backBits != 0x10)) return RC522_ERR;
 
-    // Anti-collision đọc 4 byte UID
     uint8_t serNum[2] = {0x93, 0x20};
     RC522_WriteReg(0x0D, 0x00);
     status = RC522_ToCard(0x0C, serNum, 2, id, &backBits);

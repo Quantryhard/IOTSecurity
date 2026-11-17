@@ -12,18 +12,18 @@ void DoorHW_Init(TIM_HandleTypeDef *htim_servo, I2C_HandleTypeDef *hi2c_oled) {
     SSD1306_Init(hi2c_oled);
 }
 
-// Servo 360: Tăng lên 660ms để đạt đủ 10/10 hành trình mở và đóng
+
 void Servo_SetAngle(uint8_t angle) {
     if (angle == 90) {
-        __HAL_TIM_SET_COMPARE(servo_tim, TIM_CHANNEL_1, 1200); // Quay mở
-        HAL_Delay(660);                                        // Đủ 10/10 góc mở
-        __HAL_TIM_SET_COMPARE(servo_tim, TIM_CHANNEL_1, 1500); // Dừng lại
+        __HAL_TIM_SET_COMPARE(servo_tim, TIM_CHANNEL_1, 1200); 
+        HAL_Delay(660);                                        
+        __HAL_TIM_SET_COMPARE(servo_tim, TIM_CHANNEL_1, 1500); 
     } else if (angle == 0) {
-        __HAL_TIM_SET_COMPARE(servo_tim, TIM_CHANNEL_1, 1800); // Quay đóng
-        HAL_Delay(660);                                        // Khớp thời gian mở
-        __HAL_TIM_SET_COMPARE(servo_tim, TIM_CHANNEL_1, 1500); // Dừng lại
+        __HAL_TIM_SET_COMPARE(servo_tim, TIM_CHANNEL_1, 1800); 
+        HAL_Delay(660);                                        
+        __HAL_TIM_SET_COMPARE(servo_tim, TIM_CHANNEL_1, 1500);
     } else {
-        __HAL_TIM_SET_COMPARE(servo_tim, TIM_CHANNEL_1, 1500); // Đứng yên
+        __HAL_TIM_SET_COMPARE(servo_tim, TIM_CHANNEL_1, 1500); 
     }
 }
 

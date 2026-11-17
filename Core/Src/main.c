@@ -79,7 +79,7 @@ static void MX_TIM2_Init(void);
 static void MX_USART2_UART_Init(void);
 
 /* USER CODE BEGIN 0 */
-// Gọi khi có thao tác chủ động (bấm phím, quẹt thẻ, lệnh WiFi) -> Reset cả 5s nghỉ và 15s báo động cửa
+
 void Update_Interaction(void) {
     uint32_t now = HAL_GetTick();
     last_interact_time = now;
@@ -221,7 +221,7 @@ int main(void)
     DoorHW_Init(&htim2, &hi2c1);
     RC522_Init(&hspi1);
     UI_UpdateScreen(away_mode, "Khoi dong WiFi...", WIFI_SSID, "Xin cho 2 giay...");
-    HAL_Delay(2000); // Chờ ESP32 khởi động xong hoàn toàn trước khi gửi AT
+    HAL_Delay(2000); 
 
     char esp_ip[20] = {0};
     char debug_msg[25] = {0};
@@ -250,14 +250,14 @@ int main(void)
   {
     uint32_t now = HAL_GetTick();
 
-    // 1. Cảm biến phát hiện người (PB1) -> Nháy đèn đỏ 1 cái và giữ mốc 10s
+    
         static uint8_t ir_prev_state = 0;
         uint8_t ir_triggered = (HAL_GPIO_ReadPin(Pull_down_GPIO_Port, Pull_down_Pin) == GPIO_PIN_RESET) ? 1 : 0;
 
         if (ir_triggered) {
-            last_interact_time = now; // Gia hạn thêm 10 giây kể từ lúc cảm biến còn quét thấy người
+            last_interact_time = now; 
 
-            // Chỉ nháy đèn đỏ 1 cái tại khoảnh khắc vừa phát hiện người (tránh nháy liên tục)
+            
             if (ir_prev_state == 0) {
                 LED_BlinkRed(1, 100);
             }
@@ -270,7 +270,7 @@ int main(void)
             }
         }
         ir_prev_state = ir_triggered;
-        // 2. Sau 10 giây không phát hiện người và không có tương tác nào -> Về màn hình mặt cười
+        
             if (is_awake && !is_door_open && (now - last_interact_time >= 10000)) {
                 is_awake = false;
                 sys_state = STATE_NORMAL;
@@ -279,7 +279,7 @@ int main(void)
                 Show_Cute_Idle();
             }
 
-    // 3. Cảnh báo khi mở cửa mà không có thao tác tương tác nào quá 15 giây
+    
     if (is_door_open) {
         if (!door_timeout_alert && (now - door_opened_time >= 15000)) {
             door_timeout_alert = true;
@@ -294,7 +294,7 @@ int main(void)
         }
     }
 
-    // 4. Xử lý các lệnh điều khiển từ xa qua WiFi
+    
     char remote_pass[8] = {0};
     RemoteCmd_t rcmd = ESP8266_GetRemoteCmd(remote_pass);
     if (rcmd != REMOTE_CMD_NONE) {
@@ -333,7 +333,7 @@ int main(void)
         }
     }
 
-    // 5. Xử lý Quẹt thẻ & Bàn phím khi màn hình đang thức
+    
     if (is_awake) {
         if (RC522_Check(rx_uid) == RC522_OK) {
             Update_Interaction();

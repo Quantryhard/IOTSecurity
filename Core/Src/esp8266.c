@@ -12,7 +12,7 @@ static uint8_t uart_rx_idx = 0;
 static volatile RemoteCmd_t pending_cmd = REMOTE_CMD_NONE;
 static char remote_new_pass[8] = {0};
 
-// Biến chống dò mã qua WiFi
+
 static uint8_t wifi_wrong_count = 0;
 static uint32_t wifi_lockout_until = 0;
 
@@ -50,7 +50,7 @@ bool ESP8266_Init(UART_HandleTypeDef *huart, char *ip_out, char *debug_msg) {
 
     char resp[160] = {0};
 
-    // BƯỚC 1: Thoát trạng thái kẹt dữ liệu (nếu có) và tự động dò Baudrate
+   
     ESP8266_SendCmd("+++");
     HAL_Delay(1100);
     ESP8266_SendCmd("\r\n");
@@ -61,7 +61,7 @@ bool ESP8266_Init(UART_HandleTypeDef *huart, char *ip_out, char *debug_msg) {
     uint16_t len = ESP8266_ReadResp(resp, sizeof(resp), 800);
 
     if (len == 0 || strstr(resp, "OK") == NULL) {
-        // Thử hạ xuống 9600 nếu 115200 không trả về OK
+        
         HAL_UART_DeInit(esp_uart);
         esp_uart->Init.BaudRate = 9600;
         HAL_UART_Init(esp_uart);
@@ -80,7 +80,7 @@ bool ESP8266_Init(UART_HandleTypeDef *huart, char *ip_out, char *debug_msg) {
         return false;
     }
 
-    // BƯỚC 2: Đặt chế độ Station và kết nối WiFi
+  
     ESP8266_SendCmd("AT+CWMODE=1\r\n");
     HAL_Delay(300);
 
@@ -113,7 +113,7 @@ bool ESP8266_Init(UART_HandleTypeDef *huart, char *ip_out, char *debug_msg) {
         }
     }
 
-    // BƯỚC 3: Lấy địa chỉ IP (AT+CIFSR)
+
     ESP8266_FlushRx();
     ESP8266_SendCmd("AT+CIFSR\r\n");
     ESP8266_ReadResp(resp, sizeof(resp), 1000);
@@ -124,7 +124,7 @@ bool ESP8266_Init(UART_HandleTypeDef *huart, char *ip_out, char *debug_msg) {
     ESP8266_SendCmd("AT+CIPSERVER=1,80\r\n");
     HAL_Delay(200);
 
-    // Bật ngắt nhận lệnh từ xa
+   
     HAL_UART_Receive_IT(esp_uart, &uart_rx_byte, 1);
 
     char *p_ip = strstr(resp, "STAIP,\"");
@@ -183,7 +183,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
         if (uart_rx_byte == '\n' || uart_rx_idx >= sizeof(uart_rx_buf) - 1) {
             uart_rx_buf[uart_rx_idx] = '\0';
 
-            // Chỉ kiểm tra gói tin từ client gửi tới (+IPD)
+            
             if (strstr(uart_rx_buf, "+IPD") != NULL) {
             	if (strstr(uart_rx_buf, "+IPD") != NULL) {
             	                if (HAL_GetTick() >= wifi_lockout_until) {
@@ -194,16 +194,16 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
             	                    char *p_tok = strstr(uart_rx_buf, cmd_prefix);
             	                    if (p_tok != NULL) {
             	                        char *new_tok = p_tok + strlen(cmd_prefix);
-            	                        // Lấy chuỗi Token mới đến trước ký tự xuống dòng \r hoặc \n
+            	                        
             	                        uint8_t t_len = strcspn(new_tok, "\r\n ");
             	                        if (t_len >= 4 && t_len <= 16) {
             	                            memcpy(wifi_token, new_tok, t_len);
             	                            wifi_token[t_len] = '\0';
             	                            wifi_wrong_count = 0;
-            	                            // Báo phản hồi nhẹ qua còi/LED bằng cách tái sử dụng lệnh đổi MPIN hoặc tự gửi ACK
+            	                            
             	                        }
             	                    }
-            	                    // 2. Các lệnh điều khiển dùng wifi_token hiện tại
+            	                    
             	                    else {
             	                        snprintf(cmd_prefix, sizeof(cmd_prefix), "%s_PASS=", wifi_token);
             	                        char *p_pass = strstr(uart_rx_buf, cmd_prefix);
