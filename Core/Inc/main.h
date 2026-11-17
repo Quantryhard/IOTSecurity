@@ -60,19 +60,11 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define Pull_up_Pin GPIO_PIN_1
-#define Pull_up_GPIO_Port GPIOA
-#define Pull_upA2_Pin GPIO_PIN_2
-#define Pull_upA2_GPIO_Port GPIOA
-#define Pull_upA3_Pin GPIO_PIN_3
-#define Pull_upA3_GPIO_Port GPIOA
 #define RC522_CS_Pin GPIO_PIN_4
 #define RC522_CS_GPIO_Port GPIOA
 #define RC522_RST_Pin GPIO_PIN_0
 #define RC522_RST_GPIO_Port GPIOB
-#define Pull_upB1_Pin GPIO_PIN_1
-#define Pull_upB1_GPIO_Port GPIOB
-#define Pull_down_Pin GPIO_PIN_10
+#define Pull_down_Pin GPIO_PIN_1
 #define Pull_down_GPIO_Port GPIOB
 /* USER CODE BEGIN Private defines */
 

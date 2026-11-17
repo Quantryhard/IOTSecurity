@@ -18,9 +18,9 @@ void Servo_SetAngle(uint8_t angle) {
 
 void Buzzer_Beep(uint8_t times, uint16_t duration_ms) {
     for (uint8_t i = 0; i < times; i++) {
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_11, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_9, GPIO_PIN_SET);
         HAL_Delay(duration_ms);
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_11, GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_9, GPIO_PIN_RESET);
         if (i < times - 1) HAL_Delay(80);
     }
 }
